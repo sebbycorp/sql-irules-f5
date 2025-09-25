@@ -1,0 +1,48 @@
+when HTTP_REQUEST {
+    # Common SQLi patterns (expand as needed; use case-insensitive flag with (?i))
+    set sql_patterns {
+        {(?i)union\s+select}
+        {(?i)or\s+1=1}
+        {(?i)drop\s+table}
+        {(?i)exec\s*\(}
+        {(?i)cast\s*\(}
+        {;[\s]*--}
+        {'[\s]*or[\s]*1[\s]*=[\s]*1}
+    }
+
+    # Check URI
+    set payload [HTTP::uri]
+    foreach pattern $sql_patterns {
+        if { [regexp $pattern $payload] } {
+            log local0. "SQLi detected in URI: $payload (pattern: $pattern)"
+            reject
+            return
+        }
+    }
+
+    # Check query string (GET params)
+    set payload [HTTP::query]
+    if { $payload ne "" } {
+        foreach pattern $sql_patterns {
+            if { [regexp $pattern $payload] } {
+                log local0. "SQLi detected in query: $payload (pattern: $pattern)"
+                reject
+                return
+            }
+        }
+    }
+
+    # Check POST body (for form submissions)
+    if { [HTTP::method] eq "POST" } {
+        set payload [HTTP::payload]
+        if { $payload ne "" } {
+            foreach pattern $sql_patterns {
+                if { [regexp $pattern $payload] } {
+                    log local0. "SQLi detected in POST: $payload (pattern: $pattern)"
+                    reject
+                    return
+                }
+            }
+        }
+    }
+}
