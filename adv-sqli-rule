@@ -1,0 +1,194 @@
+when HTTP_REQUEST {
+    # Set to 1 to enable logging, 0 to disable
+    set debug 1
+    
+    # Initialize block flag
+    set block_request 0
+    
+    # Get the URI, query string, and decode them
+    set uri [HTTP::uri]
+    set decoded_uri [URI::decode $uri]
+    set query [HTTP::query]
+    
+    # Common SQL injection patterns to check
+    set sql_keywords {
+        "select.*from"
+        "insert.*into"
+        "delete.*from"
+        "drop.*table"
+        "update.*set"
+        "union.*select"
+        "exec.*\("
+        "execute.*\("
+        "script.*>"
+        "javascript:"
+        "onload.*="
+        "onclick.*="
+        "onerror.*="
+        "prompt.*\("
+        "confirm.*\("
+    }
+    
+    # SQL meta-characters and dangerous patterns
+    set sql_meta_chars {
+        "'"
+        "--"
+        "/*"
+        "*/"
+        "xp_"
+        "sp_"
+        "0x[0-9a-f]+"
+        "@@"
+        "char\("
+        "nchar\("
+        "varchar\("
+        "nvarchar\("
+        "cast\("
+        "convert\("
+        "concat\("
+    }
+    
+    # Additional dangerous patterns
+    set dangerous_patterns {
+        "(\%27)|(\')"
+        "(\%23)|(#)"
+        "(\%2D\%2D)|(--)"
+        "(\%3B)|(;)"
+        "(\%2F\*)|(/\*)"
+        "(\*\%2F)|(\*/)"
+        "(\%3C)|(<)"
+        "(\%3E)|(>)"
+        "(\%25)|(%).*(\%25)|(%))"
+        "1=1"
+        "1'='1"
+        "1 or 1"
+        "1' or '1"
+        "\[sqli\]"
+        "having.*1=1"
+        "group.*by.*having"
+        "waitfor.*delay"
+        "benchmark\("
+        "sleep\("
+    }
+    
+    # Check URI and decoded URI
+    foreach pattern $sql_keywords {
+        if {[regexp -nocase $pattern $uri] || [regexp -nocase $pattern $decoded_uri]} {
+            set block_request 1
+            if {$debug} {
+                log local0. "SQL Injection detected in URI from [IP::client_addr]: $uri"
+            }
+            break
+        }
+    }
+    
+    # Check for SQL meta-characters if not already blocked
+    if {$block_request == 0} {
+        foreach pattern $sql_meta_chars {
+            if {[regexp -nocase $pattern $uri] || [regexp -nocase $pattern $decoded_uri]} {
+                set block_request 1
+                if {$debug} {
+                    log local0. "SQL meta-character detected in URI from [IP::client_addr]: $uri"
+                }
+                break
+            }
+        }
+    }
+    
+    # Check for dangerous patterns if not already blocked
+    if {$block_request == 0} {
+        foreach pattern $dangerous_patterns {
+            if {[regexp -nocase $pattern $uri] || [regexp -nocase $pattern $decoded_uri]} {
+                set block_request 1
+                if {$debug} {
+                    log local0. "Dangerous pattern detected in URI from [IP::client_addr]: $uri"
+                }
+                break
+            }
+        }
+    }
+    
+    # Check query string if not already blocked
+    if {$block_request == 0 && $query ne ""} {
+        foreach pattern $sql_keywords {
+            if {[regexp -nocase $pattern $query]} {
+                set block_request 1
+                if {$debug} {
+                    log local0. "SQL Injection detected in query string from [IP::client_addr]: $query"
+                }
+                break
+            }
+        }
+    }
+    
+    # Check POST data if not already blocked
+    if {$block_request == 0 && [HTTP::method] eq "POST"} {
+        # Trigger collection of POST data (up to 1MB)
+        if {[HTTP::header "Content-Length"] ne "" && [HTTP::header "Content-Length"] <= 1048576} {
+            HTTP::collect [HTTP::header Content-Length]
+        }
+    }
+    
+    # Check HTTP headers for SQL injection
+    if {$block_request == 0} {
+        foreach header [HTTP::header names] {
+            set header_value [HTTP::header $header]
+            foreach pattern $sql_keywords {
+                if {[regexp -nocase $pattern $header_value]} {
+                    set block_request 1
+                    if {$debug} {
+                        log local0. "SQL Injection detected in header $header from [IP::client_addr]: $header_value"
+                    }
+                    break
+                }
+            }
+            if {$block_request == 1} {
+                break
+            }
+        }
+    }
+    
+    # Check cookies
+    if {$block_request == 0 && [HTTP::header Cookie] ne ""} {
+        set cookies [HTTP::header Cookie]
+        foreach pattern $sql_keywords {
+            if {[regexp -nocase $pattern $cookies]} {
+                set block_request 1
+                if {$debug} {
+                    log local0. "SQL Injection detected in cookies from [IP::client_addr]"
+                }
+                break
+            }
+        }
+    }
+    
+    # Block the request if SQL injection is detected
+    if {$block_request == 1} {
+        # Drop the connection
+        drop
+        return
+    }
+}
+
+when HTTP_REQUEST_DATA {
+    # Check POST data for SQL injection
+    set post_data [HTTP::payload]
+    set decoded_post [URI::decode $post_data]
+    
+    set block_request 0
+    
+    # Check against SQL keywords
+    foreach pattern $sql_keywords {
+        if {[regexp -nocase $pattern $post_data] || [regexp -nocase $pattern $decoded_post]} {
+            set block_request 1
+            if {$debug} {
+                log local0. "SQL Injection detected in POST data from [IP::client_addr]"
+            }
+            break
+        }
+    }
+    
+    if {$block_request == 1} {
+        drop
+    }
+}
